@@ -3,13 +3,17 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 )
 
-const help = "Ctrl+S save · Ctrl+C save & quit"
+const (
+	notesHelp = "Tab timer · Ctrl+S save · Ctrl+C save & quit"
+	timerHelp = "Space start/pause · R reset · Tab/Esc notes · Ctrl+S save · Ctrl+C save & quit"
+)
 
 var (
 	accent       = lipgloss.Color("#88AABB")
@@ -29,6 +33,8 @@ type model struct {
 	savedText string
 	loadErr   error
 	saveErr   error
+	timer     focusTimer
+	now       func() time.Time
 }
 
 func initialModel(path string, pathErr error) model {
@@ -43,11 +49,12 @@ func initialModel(path string, pathErr error) model {
 	styles := notes.Styles()
 	styles.Focused.CursorLine = lipgloss.NewStyle()
 	styles.Focused.Placeholder = lipgloss.NewStyle().Foreground(muted)
+	styles.Blurred.CursorLine = lipgloss.NewStyle()
 	styles.Cursor.Color = accent
 	notes.SetStyles(styles)
 	notes.Focus()
 
-	m := model{notes: notes, path: path, loadErr: pathErr}
+	m := model{notes: notes, path: path, loadErr: pathErr, timer: newFocusTimer(), now: time.Now}
 	if m.loadErr == nil {
 		m.savedText, m.loadErr = readNotes(path)
 		if m.loadErr == nil {
@@ -90,7 +97,7 @@ func (m model) Init() tea.Cmd {
 	return textarea.Blink
 }
 
-// Update handles quitting and resizing, then passes events to the textarea.
+// Update routes keys to the focused area; saving and quitting work everywhere.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
@@ -100,15 +107,45 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		switch msg.String() {
+		case "tab":
+			if m.notes.Focused() {
+				m.notes.Blur()
+				return m, nil
+			}
+			cmd := m.notes.Focus()
+			return m, cmd
+		case "esc":
+			if !m.notes.Focused() {
+				cmd := m.notes.Focus()
+				return m, cmd
+			}
+			return m, nil
+		}
+		if !m.notes.Focused() {
+			switch msg.String() {
+			case "space":
+				cmd := m.timer.toggle(m.now())
+				return m, cmd
+			case "r", "R":
+				m.timer.reset()
+			}
+			return m, nil
+		}
+	case timerTickMsg:
+		cmd := m.timer.tick(msg.id, m.now())
+		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		if m.compact() {
 			m.notes.SetWidth(max(1, m.width))
-			m.notes.SetHeight(max(1, m.height))
+			// Keep timer, status, and help visible as space permits.
+			rows := min(3, max(0, m.height-1))
+			m.notes.SetHeight(max(1, m.height-rows))
 		} else {
 			m.notes.SetWidth(m.width - pageStyle.GetHorizontalFrameSize())
-			// Two heading rows, status, help, and the page padding.
-			m.notes.SetHeight(m.height - 4 - pageStyle.GetVerticalFrameSize())
+			// Two headings, timer, status, help, and the page padding.
+			m.notes.SetHeight(m.height - 5 - pageStyle.GetVerticalFrameSize())
 		}
 	}
 
@@ -117,20 +154,44 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// On very small terminals, give all available space to the note itself.
+// Small terminals omit the headings and padding.
 func (m model) compact() bool {
-	return m.width < 9 || m.height < 7
+	return m.width < 9 || m.height < 8
+}
+
+func (m model) help() string {
+	if m.notes.Focused() {
+		return notesHelp
+	}
+	return timerHelp
 }
 
 func (m model) View() tea.View {
 	content := m.notes.View()
-	if !m.compact() {
+	notesStyle, timerStyle := helpStyle, sectionStyle
+	if m.notes.Focused() {
+		notesStyle, timerStyle = sectionStyle, helpStyle
+	}
+	if m.compact() {
+		line := helpStyle.MaxWidth(max(1, m.width))
+		if m.height > 1 {
+			content += "\n" + timerStyle.MaxWidth(max(1, m.width)).Render(m.timer.view())
+		}
+		if m.height > 2 {
+			content += "\n" + line.Render(m.status())
+		}
+		if m.height > 3 {
+			content += "\n" + line.Render(m.help())
+		}
+	} else {
+		width := m.width - pageStyle.GetHorizontalFrameSize()
 		content = pageStyle.Render(lipgloss.JoinVertical(lipgloss.Left,
 			titleStyle.Render("Void"),
-			sectionStyle.Render("Notes"),
+			notesStyle.Render("Notes"),
 			content,
-			helpStyle.MaxWidth(m.width-pageStyle.GetHorizontalFrameSize()).Render(m.status()),
-			helpStyle.MaxWidth(m.width-pageStyle.GetHorizontalFrameSize()).Render(help),
+			timerStyle.MaxWidth(width).Render(m.timer.view()),
+			helpStyle.MaxWidth(width).Render(m.status()),
+			helpStyle.MaxWidth(width).Render(m.help()),
 		))
 	}
 
