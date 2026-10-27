@@ -9,7 +9,7 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-const help = "Ctrl+C quit · Notes are not saved yet"
+const help = "Ctrl+S save · Ctrl+C save & quit"
 
 var (
 	accent       = lipgloss.Color("#88AABB")
@@ -22,12 +22,16 @@ var (
 
 // model holds the editor state and the current terminal size.
 type model struct {
-	notes  textarea.Model
-	width  int
-	height int
+	notes     textarea.Model
+	width     int
+	height    int
+	path      string
+	savedText string
+	loadErr   error
+	saveErr   error
 }
 
-func initialModel() model {
+func initialModel(path string, pathErr error) model {
 	notes := textarea.New()
 	notes.Placeholder = "Write a note…"
 	notes.Prompt = ""
@@ -43,7 +47,43 @@ func initialModel() model {
 	notes.SetStyles(styles)
 	notes.Focus()
 
-	return model{notes: notes}
+	m := model{notes: notes, path: path, loadErr: pathErr}
+	if m.loadErr == nil {
+		m.savedText, m.loadErr = readNotes(path)
+		if m.loadErr == nil {
+			m.notes.SetValue(m.savedText)
+			// Never overwrite content that the textarea would silently normalize.
+			if m.notes.Value() != m.savedText {
+				m.loadErr = fmt.Errorf("the file contains characters the editor cannot preserve")
+			}
+		}
+	}
+	return m
+}
+
+func (m model) status() string {
+	if m.loadErr != nil {
+		return "Could not load notes; saving is disabled to protect the file: " + m.loadErr.Error()
+	}
+	if m.saveErr != nil {
+		return "Could not save notes: " + m.saveErr.Error()
+	}
+	if m.notes.Value() != m.savedText {
+		return "Unsaved changes"
+	}
+	return "Saved"
+}
+
+func (m *model) save() bool {
+	if m.loadErr != nil {
+		return false
+	}
+	m.saveErr = writeNotes(m.path, m.notes.Value())
+	if m.saveErr != nil {
+		return false
+	}
+	m.savedText = m.notes.Value()
+	return true
 }
 
 func (m model) Init() tea.Cmd {
@@ -54,8 +94,11 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyPressMsg:
-		if msg.String() == "ctrl+c" {
-			return m, tea.Quit
+		if msg.String() == "ctrl+s" || msg.String() == "ctrl+c" {
+			if m.save() && msg.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			return m, nil
 		}
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
@@ -64,8 +107,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notes.SetHeight(max(1, m.height))
 		} else {
 			m.notes.SetWidth(m.width - pageStyle.GetHorizontalFrameSize())
-			// Two heading rows, one help row, and the page padding.
-			m.notes.SetHeight(m.height - 3 - pageStyle.GetVerticalFrameSize())
+			// Two heading rows, status, help, and the page padding.
+			m.notes.SetHeight(m.height - 4 - pageStyle.GetVerticalFrameSize())
 		}
 	}
 
@@ -76,7 +119,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // On very small terminals, give all available space to the note itself.
 func (m model) compact() bool {
-	return m.width < 9 || m.height < 6
+	return m.width < 9 || m.height < 7
 }
 
 func (m model) View() tea.View {
@@ -86,6 +129,7 @@ func (m model) View() tea.View {
 			titleStyle.Render("Void"),
 			sectionStyle.Render("Notes"),
 			content,
+			helpStyle.MaxWidth(m.width-pageStyle.GetHorizontalFrameSize()).Render(m.status()),
 			helpStyle.MaxWidth(m.width-pageStyle.GetHorizontalFrameSize()).Render(help),
 		))
 	}
@@ -96,7 +140,8 @@ func (m model) View() tea.View {
 }
 
 func main() {
-	if _, err := tea.NewProgram(initialModel()).Run(); err != nil {
+	path, pathErr := notesPath()
+	if _, err := tea.NewProgram(initialModel(path, pathErr)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "Could not start Void:", err)
 		os.Exit(1)
 	}
