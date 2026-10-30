@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -205,104 +204,43 @@ func TestResizeWithStorageStatus(t *testing.T) {
 				t.Fatalf("manual save UI remains: %s", removed)
 			}
 		}
-		if size[0] >= 40 && !strings.Contains(view, "Focus  25:00") {
-			t.Fatal("timer is missing")
-		}
 	}
 }
 
-func TestSidebarHelpFitsBothFocusAreas(t *testing.T) {
+func TestSidebarHelpFits(t *testing.T) {
 	m := initialModel(filepath.Join(t.TempDir(), "notes.md"), nil)
 	next, _ := m.Update(tea.WindowSizeMsg{Width: 36, Height: 24})
 	m = next.(model)
-	for range 2 {
-		view := m.View().Content
-		for _, text := range []string{"Ctrl+C", "Focus  25:00"} {
-			if !strings.Contains(view, text) {
-				t.Fatalf("sidebar help is clipped (%s): %s", text, view)
-			}
-		}
-		if lipgloss.Width(view) > 36 || lipgloss.Height(view) > 24 {
-			t.Fatal("wrapped help overflowed the sidebar")
-		}
-		next, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-		m = next.(model)
+	view := m.View().Content
+	if !strings.Contains(view, notesHelp) {
+		t.Fatalf("sidebar help is clipped: %s", view)
+	}
+	if lipgloss.Width(view) > 36 || lipgloss.Height(view) > 24 {
+		t.Fatal("help overflowed the sidebar")
 	}
 }
 
-func TestFocusAndTimerKeyRouting(t *testing.T) {
-	m := initialModel(filepath.Join(t.TempDir(), "notes.md"), nil)
-	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
-	m.now = func() time.Time { return now }
-	update := func(msg tea.Msg) tea.Cmd {
-		next, cmd := m.Update(msg)
-		m = next.(model)
-		return cmd
-	}
-	for _, r := range "q rR" {
-		update(tea.KeyPressMsg{Code: r, Text: string(r)})
-	}
-	if m.notes.Value() != "q rR" || m.timer.running || m.help() != notesHelp {
-		t.Fatal("letters and spaces must remain normal note input")
-	}
-	update(tea.KeyPressMsg{Code: tea.KeyTab})
-	if m.notes.Focused() || m.help() != timerHelp {
-		t.Fatal("Tab must focus timer and change help")
-	}
-	update(tea.PasteMsg{Content: "do not insert"})
-	update(tea.KeyPressMsg{Code: 'q', Text: "q"})
-	if m.notes.Value() != "q rR" {
-		t.Fatal("typing or pasting with timer focus must not edit notes")
-	}
-	if update(tea.KeyPressMsg{Code: ' ', Text: " "}) == nil || !m.timer.running {
-		t.Fatal("Space must start the focused timer")
-	}
-	now = now.Add(time.Minute)
-	if update(tea.KeyPressMsg{Code: ' ', Text: " "}) != nil || m.timer.running || m.timer.remaining != 24*time.Minute {
-		t.Fatal("Space must pause the focused timer")
-	}
-	update(tea.KeyPressMsg{Code: ' ', Text: " "})
-	if !m.timer.running {
-		t.Fatal("Space must resume the focused timer")
-	}
-	update(tea.KeyPressMsg{Code: 'R', Text: "R"})
-	if m.timer.running || m.timer.remaining != focusDuration {
-		t.Fatal("R must reset and stop the focused timer")
-	}
-	update(tea.KeyPressMsg{Code: ' ', Text: " "})
-	update(tea.KeyPressMsg{Code: tea.KeyEscape})
-	if !m.notes.Focused() || m.help() != notesHelp || !m.timer.running {
-		t.Fatal("Esc must focus Notes without pausing the timer")
-	}
-	now = now.Add(42 * time.Second)
-	if update(timerTickMsg{id: m.timer.tickID}) == nil || m.timer.remaining != focusDuration-42*time.Second {
-		t.Fatal("timer must continue while editing notes")
-	}
-	update(tea.KeyPressMsg{Code: tea.KeyTab})
-	update(tea.KeyPressMsg{Code: tea.KeyTab})
-	if !m.notes.Focused() {
-		t.Fatal("Tab must also return focus to Notes")
-	}
-}
-
-func TestSaveAndQuitWithTimerFocus(t *testing.T) {
+func TestNotesStayEditableAfterTabAndEscape(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "notes.md")
 	m := initialModel(path, nil)
-	m.notes.SetValue("Grüße\n")
-	m.notes.Blur()
-	m, cmd := press(m, "ctrl+c")
-	if cmd == nil {
-		t.Fatal("Ctrl+C must save and quit with timer focus")
+	for _, key := range []rune{tea.KeyTab, tea.KeyEscape} {
+		next, _ := m.Update(tea.KeyPressMsg{Code: key})
+		m = next.(model)
+		if !m.notes.Focused() {
+			t.Fatal("Tab and Esc must not leave the notes editor")
+		}
+		for _, r := range "q rR" {
+			next, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
+			m = next.(model)
+		}
+		m = edit(m, " pasted")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatal("expected quit command")
+	if m.notes.Value() != "q rR pastedq rR pasted" {
+		t.Fatalf("note input was lost: %q", m.notes.Value())
 	}
-	// Loading errors must still prevent saving and quitting in the timer area.
-	m = initialModel("", errors.New("cannot load"))
-	m.notes.Blur()
-	m, cmd = press(m, "ctrl+c")
-	if cmd != nil || !strings.Contains(m.status(), "saving is disabled") {
-		t.Fatal("timer focus must not bypass storage protection")
+	m = autosave(m)
+	if got, err := readNotes(path); err != nil || got != m.notes.Value() {
+		t.Fatalf("note input was not saved: %q, %v", got, err)
 	}
 }
 
@@ -350,18 +288,6 @@ func TestAutosaveEmptyNoteAndLoadProtection(t *testing.T) {
 	m = autosave(m)
 	if got, _ := readNotes(path); got != "" {
 		t.Fatal("autosave bypassed load protection")
-	}
-}
-
-func TestAutosaveWhileTimerFocused(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "notes.md")
-	m := edit(initialModel(path, nil), "notes while timing")
-	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
-	m = next.(model)
-	next, _ = m.Update(tea.KeyPressMsg{Code: ' ', Text: " "})
-	m = autosave(next.(model))
-	if got, err := readNotes(path); err != nil || got != m.notes.Value() || !m.timer.running || m.notes.Focused() {
-		t.Fatalf("autosave interrupted timer focus: %q, %v", got, err)
 	}
 }
 

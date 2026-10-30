@@ -1,16 +1,10 @@
 # Void
 
-A quiet terminal workspace with persistent notes, a 25-minute focus timer,
-and your own shell side by side.
-
-![Void with notes and a focus timer on the left and an interactive shell on the right](docs/images/void.png)
-
-*Demo capture from an isolated tmux session, using example notes.*
+A quiet terminal workspace with persistent notes and your own shell side by side.
 
 ## What it does
 
 - Keeps one shared scratchpad between sessions, saving automatically as you type.
-- Offers a fixed 25-minute timer with start, pause, resume, and reset.
 - Runs your shell in a real tmux pane, including interactive terminal programs.
 - Lets you detach and reconnect while your workspace keeps running.
 
@@ -44,6 +38,10 @@ launches reconnect to that same workspace, keeping its current directory.
 
 For development, `go run .` starts the workspace from the repository.
 
+After updating with `go install .`, an already running sidebar keeps using the
+previous version until it exits. Save and close it with Ctrl+C in the notes pane,
+then exit the shell when your work is finished and run `void` again.
+
 ## Controls
 
 Press the tmux prefix **Ctrl+B**, release it, then press the next key.
@@ -52,10 +50,6 @@ Press the tmux prefix **Ctrl+B**, release it, then press the next key.
 | --- | --- | --- |
 | Workspace | Ctrl+B, then Left / Right | Switch panes |
 | Workspace | Ctrl+B, then D | Detach; keep the workspace running |
-| Sidebar | Tab | Switch between notes and timer |
-| Timer | Space | Start, pause, or resume |
-| Timer | R | Reset to 25:00 and stop |
-| Timer | Esc | Return to notes |
 | Sidebar | Ctrl+C | Save pending notes and close the sidebar |
 | Shell | Normal shell keys | Work normally, including Tab and Ctrl+C |
 
@@ -63,7 +57,7 @@ Run `void` again to reconnect after detaching. **Ctrl+C in the sidebar closes
 only that pane.** Currently, it is not recreated on reconnect: finish any running
 shell work, exit the remaining shell, and start Void again for a fresh workspace.
 
-## Notes and timer behavior
+## Notes behavior
 
 Notes save after a 500 ms writing pause and on normal sidebar shutdown. A new
 session restores the same text. Files are local to your machine and live outside
@@ -76,10 +70,6 @@ Writes use a temporary file and an atomic rename. File errors are shown in the
 sidebar; a read error disables saving for that session to preserve the file.
 There is one shared note, so avoid running several editor-only instances at once.
 Forced termination can lose edits still within the short writing pause.
-
-The timer measures actual elapsed time and continues while you edit notes or
-detach. A new sidebar process starts at 25:00; an existing process keeps its timer
-state. A completed session must be reset before starting again.
 
 Void uses a separate `tmux -L void` server with its own embedded configuration.
 Your regular tmux configuration and sessions are not changed. Nested tmux starts
@@ -94,9 +84,8 @@ Built with Go, [Bubble Tea](https://github.com/charmbracelet/bubbletea),
 
 | File | Responsibility |
 | --- | --- |
-| `main.go` | Notes editor, focus routing, autosave, and rendering |
+| `main.go` | Notes editor, autosave, and rendering |
 | `storage.go` | Loading and atomically saving notes |
-| `timer.go` | Countdown state and tick handling |
 | `workspace.go` | tmux startup and reconnecting |
 
 ```sh
@@ -105,7 +94,7 @@ go vet ./...
 go build -o /tmp/void .
 ```
 
-Tests cover storage, autosave, timer transitions, and tmux startup/reconnects.
+Tests cover storage, autosave, note input, resizing, and tmux startup/reconnects.
 Storage tests use temporary files; integration tests use their own tmux servers
 and a harmless sidebar fixture. They do not open personal notes or the running
 Void workspace. tmux tests are skipped when tmux is unavailable.

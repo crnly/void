@@ -11,10 +11,7 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-const (
-	notesHelp = "Tab timer · Ctrl+C quit"
-	timerHelp = "Space start/pause · R reset · Tab/Esc notes · Ctrl+C quit"
-)
+const notesHelp = "Ctrl+C quit"
 
 var (
 	accent       = lipgloss.Color("#88AABB")
@@ -41,8 +38,6 @@ type model struct {
 	quitting  bool
 	loadErr   error
 	saveErr   error
-	timer     focusTimer
-	now       func() time.Time
 }
 
 func initialModel(path string, pathErr error) model {
@@ -62,7 +57,7 @@ func initialModel(path string, pathErr error) model {
 	notes.SetStyles(styles)
 	notes.Focus()
 
-	m := model{notes: notes, path: path, loadErr: pathErr, timer: newFocusTimer(), now: time.Now}
+	m := model{notes: notes, path: path, loadErr: pathErr}
 	if m.loadErr == nil {
 		m.savedText, m.loadErr = readNotes(path)
 		if m.loadErr == nil {
@@ -129,7 +124,7 @@ func saveBeforeQuit(current tea.Model, msg tea.Msg) tea.Msg {
 	return msg
 }
 
-// Update routes keys to the focused area; quitting works everywhere.
+// Update handles saving and quitting; all other input goes to the notes editor.
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.quitting {
 		return m, nil // Do not accept edits between the final save and tea.Quit.
@@ -151,37 +146,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd := m.quit()
 			return m, cmd
 		}
-		switch msg.String() {
-		case "tab":
-			if m.notes.Focused() {
-				m.notes.Blur()
-				m.resizeNotes()
-				return m, nil
-			}
-			cmd := m.notes.Focus()
-			m.resizeNotes()
-			return m, cmd
-		case "esc":
-			if !m.notes.Focused() {
-				cmd := m.notes.Focus()
-				m.resizeNotes()
-				return m, cmd
-			}
-			return m, nil
-		}
-		if !m.notes.Focused() {
-			switch msg.String() {
-			case "space":
-				cmd := m.timer.toggle(m.now())
-				return m, cmd
-			case "r", "R":
-				m.timer.reset()
-			}
-			return m, nil
-		}
-	case timerTickMsg:
-		cmd := m.timer.tick(msg.id, m.now())
-		return m, cmd
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.resizeNotes()
@@ -209,13 +173,13 @@ func (m *model) resizeNotes() {
 	}
 	if m.compact() {
 		m.notes.SetWidth(max(1, m.width))
-		// Keep timer, errors, and help visible as space permits.
-		rows := min(2+statusRows, max(0, m.height-1))
+		// Keep errors and help visible as space permits.
+		rows := min(1+statusRows, max(0, m.height-1))
 		m.notes.SetHeight(max(1, m.height-rows))
 	} else {
 		m.notes.SetWidth(m.width - pageStyle.GetHorizontalFrameSize())
-		// Headings, timer, optional error, wrapped help, and page padding.
-		m.notes.SetHeight(m.height - 3 - statusRows - lipgloss.Height(m.helpView()) - pageStyle.GetVerticalFrameSize())
+		// Headings, optional error, wrapped help, and page padding.
+		m.notes.SetHeight(m.height - 2 - statusRows - lipgloss.Height(m.helpView()) - pageStyle.GetVerticalFrameSize())
 	}
 }
 
@@ -224,45 +188,30 @@ func (m model) compact() bool {
 	return m.width < 9 || m.height < 8
 }
 
-func (m model) help() string {
-	if m.notes.Focused() {
-		return notesHelp
-	}
-	return timerHelp
-}
-
 func (m model) helpView() string {
 	width := max(1, m.width-pageStyle.GetHorizontalFrameSize())
 	// At least one editor row must remain, even on a short terminal.
-	return helpStyle.Width(width).MaxWidth(width).MaxHeight(max(1, m.height-7)).Render(m.help())
+	return helpStyle.Width(width).MaxWidth(width).MaxHeight(max(1, m.height-6)).Render(notesHelp)
 }
 
 func (m model) View() tea.View {
 	content := m.notes.View()
-	notesStyle, timerStyle := helpStyle, sectionStyle
-	if m.notes.Focused() {
-		notesStyle, timerStyle = sectionStyle, helpStyle
-	}
 	if m.compact() {
 		line := helpStyle.MaxWidth(max(1, m.width))
-		if m.height > 1 {
-			content += "\n" + timerStyle.MaxWidth(max(1, m.width)).Render(m.timer.view())
-		}
-		helpRow := 2
-		if m.status() != "" && m.height > 2 {
+		helpRow := 1
+		if m.status() != "" && m.height > 1 {
 			content += "\n" + line.Render(m.status())
 			helpRow++
 		}
 		if m.height > helpRow {
-			content += "\n" + line.Render(m.help())
+			content += "\n" + line.Render(notesHelp)
 		}
 	} else {
 		width := m.width - pageStyle.GetHorizontalFrameSize()
 		rows := []string{
 			titleStyle.Render("Void"),
-			notesStyle.Render("Notes"),
+			sectionStyle.Render("Notes"),
 			content,
-			timerStyle.MaxWidth(width).Render(m.timer.view()),
 		}
 		if m.status() != "" {
 			rows = append(rows, helpStyle.MaxWidth(width).Render(m.status()))
@@ -283,7 +232,7 @@ func runSidebar() error {
 }
 
 func main() {
-	sidebar := flag.Bool("sidebar", false, "run only the notes editor and focus timer")
+	sidebar := flag.Bool("sidebar", false, "run only the notes editor")
 	flag.Parse()
 	var err error
 	if *sidebar {
