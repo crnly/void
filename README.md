@@ -8,8 +8,9 @@ A quiet terminal workspace with persistent notes and your own shell side by side
 - Runs your shell in a real tmux pane, including interactive terminal programs.
 - Lets you detach and reconnect while your workspace keeps running.
 
-Void is an early personal learning project, developed iteratively with AI coding
-assistants and checked through automated tests and hands-on use.
+Void is an early personal learning project by [Till Cornely](https://github.com/crnly),
+developed iteratively with AI coding assistants, including OpenAI Codex, and
+checked through automated tests and hands-on use.
 
 ## Install and start
 
